@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
+	"id": "datacore-addon-transform-js",
+	"name": "Datacore Javascript/Typescript Transformer",
 	"version": "1.0.0",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "transforms imports and exports to dc.require and return statements. has special cases for imports of react.",
+	"author": "The Tablet",
+	"authorUrl": "https://tablet.sh",
 	"isDesktopOnly": false
 }
