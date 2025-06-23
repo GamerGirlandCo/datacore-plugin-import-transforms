@@ -78,8 +78,7 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 					},
 				];
 			})
-		) */;
-		return transform(src, {
+		) */ return transform(src, {
 			filename: srcPath,
 			cwd: this.app.vault.adapter.getBasePath(),
 			plugins: [
@@ -238,12 +237,18 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 								return a;
 							})
 							.map((a: { import: string; node: string; default: string }) => {
-								if (a.import?.startsWith("./")) {
-									a.import = a.import.substring(2);
+								let imported: string = "";
+								if (Array.isArray(a.import)) {
+									imported = a.import.find(b => b.endsWith("js")) as string
+								} else if (typeof a.import == "string") {
+									if (a.import?.startsWith("./")) {
+										imported = a.import.substring(2);
+									}	
 								}
+								if(!imported) return null;
 								return tar.find((b) =>
-									b.name.startsWith("package/" + a.import)
-								);
+										b.name.startsWith("package/" + imported)
+									);
 							})
 							.filter((a) => !!a)
 					);

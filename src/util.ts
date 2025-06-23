@@ -23,6 +23,7 @@ import type {
 	ObjectProperty,
 	SpreadElement,
 	StringLiteral,
+	VariableDeclarator,
 } from "@babel/types";
 import * as t from "@babel/types";
 import pathutils from "path-browserify-esm";
@@ -74,8 +75,8 @@ function replaceWithIdent(
 	let mappedSpecs = specs
 		.filter(
 			(s) =>
-				t.isImportSpecifier(s) ||
-				(t.isExportSpecifier(s) && mustIdent(s.exported).name != "default")
+				(t.isImportSpecifier(s) && mustIdent(s.imported).name != "default") ||
+				(t.isExportSpecifier(s) && mustIdent(s.local).name != "default")
 		)
 		.map((s: ImportSpecifier | ExportSpecifier) => {
 			let i: Identifier;
@@ -94,8 +95,22 @@ function replaceWithIdent(
 				(t.isExportSpecifier(s) && mustIdent(s.exported).name == "default")
 		)
 		.map((s) => s.local!);
+	let destructuredDefaultImports = specs.filter(
+		(s) => t.isImportSpecifier(s) && mustIdent(s.imported).name == "default"
+	) as ImportSpecifier[];
+	let destructuredDefaultExports = specs.filter(
+		(s) => t.isExportSpecifier(s) && mustIdent(s.local).name == "default"
+	) as ExportSpecifier[];
 	let mappedDefaults = defaults.map((m) => b.variableDeclarator(m, src));
-	let declarators = [];
+	let declarators: VariableDeclarator[] = [];
+	declarators.push(
+		...destructuredDefaultImports.map((a) => b.variableDeclarator(a.local, src))
+	);
+	declarators.push(
+		...destructuredDefaultExports.map((a) =>
+			b.variableDeclarator(mustIdent(a.exported), src)
+		)
+	);
 	if (mappedSpecs.length)
 		declarators.push(b.variableDeclarator(b.objectPattern(mappedSpecs), src));
 	declarators.push(...mappedDefaults);
@@ -679,14 +694,24 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 							dcExports.push(
 								t.exportNamedDeclaration(
 									null,
-									(specs as t.VariableDeclaration).declarations
-										.flatMap((a) => (a.id as t.ObjectPattern).properties)
-										.map((a: ObjectProperty) =>
-											t.exportSpecifier(
-												a.value as Identifier,
-												a.key as Identifier | StringLiteral
-											)
-										)
+									(specs as t.VariableDeclaration).declarations.flatMap(
+										(a: VariableDeclarator) => {
+											const fin: ExportSpecifier[] = [];
+											if (t.isIdentifier(a.id)) {
+												fin.push(t.exportSpecifier(a.id, a.id))
+											} else if (t.isObjectPattern(a.id)) {
+												fin.push(
+													...a.id.properties.map((b: ObjectProperty) =>
+														t.exportSpecifier(
+															b.value as Identifier,
+															b.key as Identifier | StringLiteral
+														)
+													)
+												);
+											}
+											return fin;
+										}
+									)
 								)
 							);
 							path.replaceWithMultiple(specs);
@@ -753,7 +778,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 				AssignmentExpression(path, state) {
 					const orig = visitor.AssignmentExpression as Function;
 					orig(path, that);
-				}
+				},
 			});
 
 			file.code = generate(file.ast).code;
