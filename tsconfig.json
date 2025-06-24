@@ -16,13 +16,15 @@
 			"ES5",
 			"ES6",
 			"ES7"
-		]
+		],
 	},
 	"exclude": [
-		"src/tests/**/*.filetest.ts*"
+		"src/tests/**/*.filetest.ts*",
+		"example/**/*.*"
 	],
 	"include": [
-		"src/**/*.ts",
-		"example/**/*"
-, "src/worker/transform.worker.ts.not"	]
+		"src/main.ts",
+		"src/worker/*.ts",
+		"src/typings/**/*.d.ts"
+	]
 }

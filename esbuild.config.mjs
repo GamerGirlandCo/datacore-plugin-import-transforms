@@ -19,14 +19,7 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = process.argv[2] === "production";
-
-const context = await esbuild.context({
-	banner: {
-		js: banner,
-	},
-	entryPoints: ["src/main.ts"],
-	bundle: true,
-	external: [
+const external = [
 		"obsidian",
 		"electron",
 		"@codemirror/autocomplete",
@@ -41,10 +34,17 @@ const context = await esbuild.context({
 		"@lezer/highlight",
 		"@lezer/lr",
 		...builtins,
-	],
+	]
+const context = await esbuild.context({
+	banner: {
+		js: banner,
+	},
+	entryPoints: ["main.ts"],
+	bundle: true,
+	external: external,
 	format: "cjs",
 	target: "es2018",
-	logLevel: "info",
+	logLevel: "debug",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
 	outfile: "build/main.js",
@@ -52,8 +52,8 @@ const context = await esbuild.context({
 	plugins: [
 		inlineWorkerPlugin({
 			workerName: "Datacore Transform Worker",
+			external,
 			sourcemap: prod ? false : "inline",
-			external: [...builtins],
 		}),
 		{
 			name: "watcher",
@@ -87,4 +87,6 @@ if (prod) {
 	process.exit(0);
 } else {
 	await context.watch();
+	// await context.rebuild();
+	// process.exit(0)
 }

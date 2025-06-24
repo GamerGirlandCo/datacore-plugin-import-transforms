@@ -26,10 +26,8 @@ import type {
 	VariableDeclarator,
 } from "@babel/types";
 import * as t from "@babel/types";
-import pathutils from "path-browserify-esm";
+import pathutils from "@chainner/node-path";
 import { parse as doParse, parse, ParserPlugin } from "@babel/parser";
-import { Vault } from "obsidian";
-import DatacoreJSTransformPlugin from "./main";
 import generate from "@babel/generator";
 import { NodePath } from "@babel/traverse";
 import { PluginObj, transformAsync } from "@babel/core";
@@ -42,10 +40,12 @@ export type ImportArray = (
 )[];
 export type ExportArray = (ExportDefaultDeclaration | ExportNamedDeclaration)[];
 
+export const exts = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".d.ts"];
 export interface TransformOptions {
 	vaultFiles: string[];
 	vaultRoot: string;
 	outerBaseDir: string;
+	isSecondPass?: boolean;
 	importPaths: {
 		[k: string]: {
 			baseDir: string;
@@ -252,44 +252,6 @@ function getParser(ts: boolean = false, jsx: boolean = false) {
 	};
 }
 
-async function transformImportsAndExportsOld(
-	code: string,
-	plugin: DatacoreJSTransformPlugin | null = null,
-	typescript: boolean = false,
-	useJsx: boolean = false,
-	resolveRelativeTo: string | null = null
-) {
-	let parser = getParser(typescript, useJsx);
-	const ast = parser.parse(code);
-	babel.traverse(ast);
-	/* const possiblePathEntries: { [key: string]: string[] } = Object.fromEntries(
-		await Promise.all(
-			otherImports.map(async (s) => {
-				console.log("ssss", s);
-				return [
-					s,
-					plugin ? (await plugin.settings.downloadedNpmLibs[s]) ?? [] : [],
-				];
-			})
-		)
-	);
-	for (let s of otherImports) {
-		try {
-			if (plugin) await plugin.addPackage(s);
-		} catch (e) {
-			console.error(e);
-			throw e;
-		}
-	}
-	try {
-		babel.traverse(ast, {});
-	} catch (e) {
-		console.error(e);
-		throw e;
-	}
-	return generate(ast).code; */
-}
-
 function groupBy<K, T>(items: T[], keyFn: (it: T) => K): Map<K, T[]> {
 	if (items.length == 0) return new Map();
 	const inter = items.sort((a, b) =>
@@ -313,13 +275,21 @@ function groupBy<K, T>(items: T[], keyFn: (it: T) => K): Map<K, T[]> {
 		return pv;
 	}, new Map<K, T[]>());
 }
-
+const sep_regex = /\/|\\/;
 function convertRelative(
 	src: string,
 	outerBaseDir: string,
 	importPaths: TransformOptions["importPaths"],
 	filename?: string
 ) {
+	if (
+		filename &&
+		(pathutils.isAbsolute(filename) || pathutils.win32.isAbsolute(filename))
+	)
+		filename = filename
+			.split(sep_regex)
+			.slice(filename.split(sep_regex).indexOf(".obsidian"))
+			.join("/");
 	let base = src;
 	let aux: string | null = null;
 	if (src.split("/").length > 2) {
@@ -329,19 +299,27 @@ function convertRelative(
 	let entry: string | undefined = importPaths[base]?.files?.find(
 		(a) =>
 			a.endsWith(importPaths[base].entryPoint) &&
-			DatacoreJSTransformPlugin.exts.includes(pathutils.extname(a))
+			!a.includes("cjs") &&
+			exts.includes(pathutils.extname(a))
 	);
 	if (aux) {
-		entry = importPaths[base]?.files?.find(
-			(a) =>
-				aux.split("/").every((b) => a.includes(b)) &&
-				DatacoreJSTransformPlugin.exts.includes(pathutils.extname(a))
-		);
+		entry = importPaths[base]?.files?.find((a) => {
+			return aux
+				.split("/")
+				.every((b, i, arr) =>
+					exts.some((c) =>
+						i == arr.length - 1 ? a.endsWith(b + c) : (a.includes(b + "/"))
+					)
+				) &&
+				!a.includes("cjs") &&
+				exts.includes(pathutils.extname(a));
+		});
 	}
 	if ((src.startsWith("./") || src.startsWith("..")) && filename) {
-		entry = pathutils.join(outerBaseDir ?? pathutils.dirname(filename), src);
-		if (!DatacoreJSTransformPlugin.exts.includes(pathutils.extname(entry))) {
-			const tmp = entry;
+		entry = pathutils.join(pathutils.dirname(filename), src);
+
+		if (!exts.includes(pathutils.extname(entry))) {
+			const tmp = entry.replace(/\\/g, "/");
 			const splitDir = pathutils.dirname(entry).split(/\/|\\/);
 			const chopped = splitDir.slice(splitDir.indexOf("libs") + 1);
 			// scuffed sliding window algorithm i guess..?
@@ -355,9 +333,12 @@ function convertRelative(
 					}
 				}
 			}
-			entry = importPaths[libName!]?.files?.find((a) =>
-				DatacoreJSTransformPlugin.exts.some((b) => a == tmp! + b)
+			entry = importPaths[libName!]?.files?.find(
+				(a) => exts.some((b) => a == tmp! + b) || a == tmp
 			);
+			if (!entry) {
+				// console.log("tmp=", tmp)
+			}
 		}
 	}
 	if (!entry)
@@ -366,17 +347,64 @@ function convertRelative(
 				? importPaths[base]?.baseDir + "/" + importPaths[base]?.entryPoint
 				: undefined;
 	if (!entry) {
+		if (aux) {
+			const split = aux.split("/");
+			entry = importPaths[base]?.files?.find(
+				(a) =>
+					exts.some((b) => a.endsWith(split[split.length - 1] + b)) ||
+					a.endsWith(split[split.length - 1])
+			);
+		}
+	}
+	if (!entry) {
 		entry = importPaths[base]?.files?.find(
 			(a) => a.endsWith("index.js") && !a.includes("cjs")
 		);
 	}
 	return entry;
 }
+type ImportConvertResult = {
+	hooks: ImportSpecifier[];
+	other: ImportArray;
+};
+function convertImportOrRequire(
+	source: string,
+	specifiers: ImportArray = []
+): ImportConvertResult {
+	const ret: ImportConvertResult = {
+		hooks: [],
+		other: [],
+	};
+	if (["react", "preact", "preact/hooks"].includes(source)) {
+		let hooks = specifiers.filter(
+			(s: ImportSpecifier) =>
+				t.isImportSpecifier(s) &&
+				t.isIdentifier(s.imported) &&
+				s.imported.name.startsWith("use")
+		) as ImportSpecifier[];
+		let other: ImportArray = specifiers.filter(
+			(
+				s: ImportSpecifier | ImportDefaultSpecifier | ImportNamespaceSpecifier
+			) =>
+				(t.isImportSpecifier(s) &&
+					t.isIdentifier(s.imported) &&
+					!(s.imported.name as string).startsWith("use")) ||
+				t.isImportDefaultSpecifier(s) ||
+				t.isImportNamespaceSpecifier(s)
+		) as ImportArray;
+		ret.hooks.push(...hooks);
+		/* let hookSpecs = replaceWithIdent(
+					hooks,
+					dcMember(b.identifier("hooks"))
+				); */
+		ret.other.push(...other);
+	}
+	return ret;
+}
 
 export function transformImportsAndExports({ types: t }: typeof Babel) {
 	let dcImports: ImportSpecifier[] = [];
 	let dcHooks: ImportSpecifier[] = [];
-	let otherImports: string[] = [];
 	let dcExports: ExportArray = [];
 	let allDecls: ExportAllDeclaration[] = [];
 	const visitor: Babel.Visitor<Babel.PluginPass & { opts: TransformOptions }> =
@@ -449,24 +477,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 						awaiter
 					);
 					path.replaceWith(specs);
-					// await dc.require...
-				} /* else if (resolveRelativeTo != null) {
-					if (src.startsWith("./") || src.startsWith("..")) {
-						let apath = pathutils.join(resolveRelativeTo, src);
-						const awaiter = b.awaitExpression(
-							b.callExpression(b.memberExpression(dc, dcRequire), [
-								b.stringLiteral(apath),
-							])
-						);
-						const specs = replaceWithIdent(
-							node.specifiers as ImportArray,
-							awaiter
-						);
-						path.replaceWith(specs);
-					} else if (plugin != null && src.split("/").length == 2) {
-						otherImports.push(src);
-					}
-				} */ /* if (plugin != null && src.split("/").length == 2) */ else {
+				} else {
 					let entry = convertRelative(
 						src,
 						state.opts.outerBaseDir,
@@ -487,9 +498,24 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 					} else {
 						path.remove();
 					}
-
-					otherImports.push(src);
-				}
+				} /* if (plugin != null && src.split("/").length == 2) */
+				/* else if (resolveRelativeTo != null) {
+					if (src.startsWith("./") || src.startsWith("..")) {
+						let apath = pathutils.join(resolveRelativeTo, src);
+						const awaiter = b.awaitExpression(
+							b.callExpression(b.memberExpression(dc, dcRequire), [
+								b.stringLiteral(apath),
+							])
+						);
+						const specs = replaceWithIdent(
+							node.specifiers as ImportArray,
+							awaiter
+						);
+						path.replaceWith(specs);
+					} else if (plugin != null && src.split("/").length == 2) {
+						otherImports.push(src);
+					}
+				} */
 				//console.log("p", node, dcImports);
 			},
 			ExpressionStatement(path, state) {
@@ -569,7 +595,8 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 					path.replaceWith(b.callExpression(nm, node.arguments));
 				} else if (
 					t.isIdentifier(node.callee) &&
-					node.callee.name == "require"
+					node.callee.name == "require" &&
+					t.isStringLiteral(node.arguments[0])
 				) {
 					let entry = convertRelative(
 						(node.arguments[0] as StringLiteral).value,
@@ -585,7 +612,6 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 						);
 						path.replaceWith(awaiter);
 					} else {
-						path.remove();
 					}
 				}
 			},
@@ -633,13 +659,16 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 					} else {
 						const final = b.exportDefaultDeclaration(node.right);
 						dcExports.push(final);
-						path.remove();
+						if (
+							t.isExpressionStatement(path.parent) ||
+							t.isAssignmentExpression(path.parent) ||
+							t.isConditionalExpression(path.parent)
+						) {
+							path.parentPath.remove();
+						} else {
+							path.remove();
+						}
 					}
-				} else if (
-					node.right.type == "UnaryExpression" &&
-					node.right.operator == "void"
-				) {
-					path.parentPath.remove();
 				} else if (isExports(node.left)) {
 					let me = node.left as t.MemberExpression;
 					const prop = t.isIdentifier(me.property)
@@ -650,7 +679,35 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 					]);
 					const final = b.exportNamedDeclaration(vd);
 					dcExports.push(final);
-					path.remove();
+
+					/* {
+						let par = path.parentPath;
+						path.remove();
+						while (
+							(t.isExpressionStatement(par.node) ||
+								t.isAssignmentExpression(par.node) ||
+								t.isConditionalExpression(par.node)) 
+						) {
+							if (par.parentPath) par = par.parentPath;
+							else break;
+						}
+						if(par && !t.isProgram(par.node))
+							try {
+							par.remove();
+						} catch(e) {
+							console.debug(e)
+						}
+					} */
+					if (
+						t.isExpressionStatement(path.parent) ||
+						t.isAssignmentExpression(path.parent) ||
+						t.isConditionalExpression(path.parent) ||
+						t.isObjectProperty(path.parent)
+					) {
+						path.replaceWith(t.expressionStatement(t.nullLiteral()));
+					} else {
+						path.remove();
+					}
 				}
 			},
 			JSXOpeningElement(path) {
@@ -698,7 +755,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 										(a: VariableDeclarator) => {
 											const fin: ExportSpecifier[] = [];
 											if (t.isIdentifier(a.id)) {
-												fin.push(t.exportSpecifier(a.id, a.id))
+												fin.push(t.exportSpecifier(a.id, a.id));
 											} else if (t.isObjectPattern(a.id)) {
 												fin.push(
 													...a.id.properties.map((b: ObjectProperty) =>
@@ -752,6 +809,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 			);
 
 			const that = this;
+			that.opts.isSecondPass = true;
 			const aggregatedAll = b.objectExpression(
 				allDecls.map((a) => {
 					const convertedSource = convertRelative(
@@ -760,26 +818,21 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 						that.opts.importPaths,
 						that.filename
 					);
-					const spreads = b.spreadElement(
-						convertImportToDcRequire(b.stringLiteral(convertedSource!))
-					);
-					return spreads;
+					if (convertedSource) {
+						const spreads = b.spreadElement(
+							convertImportToDcRequire(b.stringLiteral(convertedSource!))
+						);
+						return spreads;
+					} else {
+						return b.spreadElement(b.objectExpression([]));
+					}
 				})
 			);
 			if (t.isObjectExpression(originalExports.argument)) {
 				originalExports.argument.properties.push(...aggregatedAll.properties);
 			}
+			// file.ast.program.body.unshift(b.variableDeclaration("let", [b.variableDeclarator(b.identifier("exports"), b.objectExpression([]))]))
 			file.ast.program.body.push(originalExports);
-			Babel.traverse(file.ast, {
-				CallExpression(path, state) {
-					const orig = visitor.CallExpression! as Function;
-					orig(path, that);
-				},
-				AssignmentExpression(path, state) {
-					const orig = visitor.AssignmentExpression as Function;
-					orig(path, that);
-				},
-			});
 
 			file.code = generate(file.ast).code;
 		},
