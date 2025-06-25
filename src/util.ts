@@ -40,21 +40,27 @@ export type ImportArray = (
 )[];
 export type ExportArray = (ExportDefaultDeclaration | ExportNamedDeclaration)[];
 
-export const exts = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".d.ts"];
+export const exts = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".d.ts", "package.json"];
 export interface TransformOptions {
 	vaultFiles: string[];
 	vaultRoot: string;
 	outerBaseDir: string;
 	isSecondPass?: boolean;
+	version?: string;
 	importPaths: {
 		[k: string]: {
 			baseDir: string;
 			files: string[];
 			entryPoint: string;
+			dependencies: string[];
+			latest: string;
 		};
 	};
+	dependencies: string[];
+	latestVersions: {
+		[k: string]: string;
+	}
 }
-
 export interface TransformRequest {
 	possiblePaths: string[];
 }
@@ -62,6 +68,14 @@ export interface TransformRequest {
 const dc = b.identifier("dc");
 const dcJsx = b.jsxIdentifier("dc");
 const dcRequire = b.identifier("require");
+
+export const stripName = (k: string) => {
+	const lio = k.lastIndexOf("@");
+	if (lio > 0) {
+		return k.substring(0, lio);
+	}
+	return k;
+};
 
 const dcMember = (ident: Identifier) => b.memberExpression(dc, ident);
 const mustIdent = (item: StringLiteral | Identifier) => {
@@ -165,9 +179,8 @@ function declToObjectProperty(decl: Declaration | null): ObjectProperty[] {
 
 function convertExports(
 	exports: ExportArray,
-	outerBaseDir: string,
-	importPaths: TransformOptions["importPaths"],
-	filename?: string
+	opts: TransformOptions,
+	filename?: string,
 ) {
 	let singleDefault: Expression | null = null;
 	const objEx = b.objectExpression(
@@ -185,8 +198,7 @@ function convertExports(
 							if (t.isExportNamespaceSpecifier(a)) {
 								const convertedSource = convertRelative(
 									(e.source as StringLiteral).value,
-									outerBaseDir,
-									importPaths,
+									opts,
 									filename
 								);
 								return b.objectProperty(
@@ -235,53 +247,13 @@ function convertExports(
 	return rs;
 }
 
-function getParser(ts: boolean = false, jsx: boolean = false) {
-	const plugins: ParserPlugin[] = [];
-	if (jsx) plugins.push("jsx");
-	if (ts) plugins.push("typescript");
-	return {
-		parse: (src: string) => {
-			return doParse(src, {
-				allowAwaitOutsideFunction: true,
-				plugins,
-				sourceType: "module",
-				errorRecovery: true,
-				tokens: true,
-			});
-		},
-	};
-}
-
-function groupBy<K, T>(items: T[], keyFn: (it: T) => K): Map<K, T[]> {
-	if (items.length == 0) return new Map();
-	const inter = items.sort((a, b) =>
-		keyFn(a) < keyFn(b) ? -1 : keyFn(a) > keyFn(b) ? 1 : 0
-	);
-	let result: { key: K; rows: T[] }[] = [];
-	let cur = [inter[0]];
-	let curKey = keyFn(inter[0]);
-	for (let idx = 1; idx < inter.length; idx++) {
-		let nk = keyFn(inter[idx]);
-		if (curKey != nk) {
-			result.push({ key: curKey, rows: cur });
-			curKey = nk;
-			cur = [inter[idx]];
-		} else {
-			cur.push(inter[idx]);
-		}
-	}
-	return result.reduce((pv, cv) => {
-		pv.set(cv.key, cv.rows);
-		return pv;
-	}, new Map<K, T[]>());
-}
 const sep_regex = /\/|\\/;
 function convertRelative(
 	src: string,
-	outerBaseDir: string,
-	importPaths: TransformOptions["importPaths"],
+	opts: TransformOptions,
 	filename?: string
 ) {
+	const {importPaths, version, dependencies: deps} = opts
 	if (
 		filename &&
 		(pathutils.isAbsolute(filename) || pathutils.win32.isAbsolute(filename))
@@ -291,24 +263,38 @@ function convertRelative(
 			.slice(filename.split(sep_regex).indexOf(".obsidian"))
 			.join("/");
 	let base = src;
+	let key = `${base}@${version}`
 	let aux: string | null = null;
-	if (src.split("/").length > 2) {
-		base = src.split("/").slice(0, 2).join("/");
+	if (src.split("/").length > 2 && !src.startsWith("./") && !src.startsWith("..")) {
+		base =  src.split("/").slice(0, 2).join("/");
+		key = `${base}@${version}`
+		if(!importPaths[key])
+			key = deps.find(a => a.startsWith(base))!
 		aux = src.split("/").slice(2).join("/");
 	}
-	let entry: string | undefined = importPaths[base]?.files?.find(
+	if(!importPaths[key] && !src.startsWith("./") && !src.startsWith("..")) {
+		let nk = deps.find(a => {
+			return a.startsWith(base)
+		})
+		if(nk)
+			key = nk
+		else
+			key = `${base}@${opts.latestVersions[base]}`
+	}
+
+	let entry: string | undefined = importPaths[key]?.files?.find(
 		(a) =>
-			a.endsWith(importPaths[base].entryPoint) &&
+			a.endsWith(importPaths[key].entryPoint) &&
 			!a.includes("cjs") &&
 			exts.includes(pathutils.extname(a))
 	);
-	if (aux) {
-		entry = importPaths[base]?.files?.find((a) => {
+	if (aux && !src.startsWith("..") && !src.startsWith("./")) {
+		entry = importPaths[key]?.files?.find((a) => {
 			return aux
 				.split("/")
 				.every((b, i, arr) =>
 					exts.some((c) =>
-						i == arr.length - 1 ? a.endsWith(b + c) : (a.includes(b + "/"))
+						i == arr.length - 1 ? a.endsWith(b + c) : (a.includes(`${b}/`))
 					)
 				) &&
 				!a.includes("cjs") &&
@@ -316,7 +302,7 @@ function convertRelative(
 		});
 	}
 	if ((src.startsWith("./") || src.startsWith("..")) && filename) {
-		entry = pathutils.join(pathutils.dirname(filename), src);
+		entry = pathutils.join(pathutils.dirname(filename), src).replace(/\\/g, "/");
 
 		if (!exts.includes(pathutils.extname(entry))) {
 			const tmp = entry.replace(/\\/g, "/");
@@ -327,29 +313,29 @@ function convertRelative(
 			outer: for (let i = 0; i < chopped.length; i++) {
 				for (let j = 1; j <= 2; j++) {
 					const libStart = chopped.slice(0, j).join("/");
-					if (libStart.slice(0, libStart.lastIndexOf("@")) in importPaths) {
-						libName = libStart.slice(0, libStart.lastIndexOf("@"));
+					if (libStart/* .slice(0, libStart.lastIndexOf("@")) */ in importPaths) {
+						key = libName = libStart/* .slice(0, libStart.lastIndexOf("@")) */;
 						break outer;
 					}
 				}
 			}
 			entry = importPaths[libName!]?.files?.find(
-				(a) => exts.some((b) => a == tmp! + b) || a == tmp
+				(a) => exts.some((b) => a == (tmp! + b) || a.startsWith(tmp + b)) || a == tmp
 			);
 			if (!entry) {
-				// console.log("tmp=", tmp)
+				console.warn(entry);
 			}
 		}
 	}
 	if (!entry)
 		entry =
-			importPaths[base] && importPaths[base].entryPoint
-				? importPaths[base]?.baseDir + "/" + importPaths[base]?.entryPoint
+			importPaths[key] && importPaths[key].entryPoint
+				? importPaths[key]?.baseDir + "/" + importPaths[key]?.entryPoint
 				: undefined;
 	if (!entry) {
 		if (aux) {
 			const split = aux.split("/");
-			entry = importPaths[base]?.files?.find(
+			entry = importPaths[key]?.files?.find(
 				(a) =>
 					exts.some((b) => a.endsWith(split[split.length - 1] + b)) ||
 					a.endsWith(split[split.length - 1])
@@ -357,7 +343,7 @@ function convertRelative(
 		}
 	}
 	if (!entry) {
-		entry = importPaths[base]?.files?.find(
+		entry = importPaths[key]?.files?.find(
 			(a) => a.endsWith("index.js") && !a.includes("cjs")
 		);
 	}
@@ -480,8 +466,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 				} else {
 					let entry = convertRelative(
 						src,
-						state.opts.outerBaseDir,
-						state.opts.importPaths,
+						state.opts,
 						state.filename
 					);
 					if (entry) {
@@ -600,8 +585,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 				) {
 					let entry = convertRelative(
 						(node.arguments[0] as StringLiteral).value,
-						state.opts.outerBaseDir,
-						state.opts.importPaths,
+						state.opts,
 						state.filename
 					);
 					if (entry) {
@@ -613,7 +597,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 						path.replaceWith(awaiter);
 					} else {
 					}
-				}
+				} 
 			},
 			AssignmentExpression(path, state) {
 				const node = path.node;
@@ -734,9 +718,8 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 					if (node.source && node.specifiers.length) {
 						let entry = convertRelative(
 							node.source.value,
-							state.opts.outerBaseDir,
-							state.opts.importPaths,
-							state.filename
+							state.opts,
+							state.filename,
 						);
 						if (entry) {
 							const awaiter = b.awaitExpression(
@@ -803,9 +786,8 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 		post(file) {
 			const originalExports = convertExports(
 				dcExports.filter((a) => !(a as any).source),
-				this.opts.outerBaseDir,
-				this.opts.importPaths,
-				this.filename
+				this.opts,
+				this.filename,
 			);
 
 			const that = this;
@@ -814,8 +796,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 				allDecls.map((a) => {
 					const convertedSource = convertRelative(
 						a.source.value,
-						that.opts.outerBaseDir,
-						that.opts.importPaths,
+						that.opts,
 						that.filename
 					);
 					if (convertedSource) {
@@ -841,39 +822,4 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 			opts: TransformOptions;
 		}
 	>;
-}
-export function transformExtraImports(): PluginObj<
-	Babel.PluginPass & {
-		opts: {
-			possiblePathEntries: {
-				[k: string]: string[];
-			};
-		};
-	}
-> {
-	return {
-		inherits: () => [syntaxTs, syntaxJsx],
-		visitor: {
-			ImportDeclaration(path, state) {
-				const vals = Object.values(state.opts.possiblePathEntries).flatMap(
-					(a) => a
-				);
-				const node = path.node;
-				const src = node.source.value;
-				const str = vals.find((a) => a.replace(/\.\w*?js$/m, "").endsWith(src));
-				if (str) {
-					const awaiter = b.awaitExpression(
-						b.callExpression(b.memberExpression(dc, dcRequire), [
-							b.stringLiteral(str),
-						])
-					);
-					path.replaceWith(
-						replaceWithIdent(node.specifiers as ImportArray, awaiter)
-					);
-				} else {
-					path.remove();
-				}
-			},
-		},
-	};
 }
