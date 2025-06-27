@@ -33,6 +33,7 @@
 		"@babel/core": "^7.27.4",
 		"@babel/generator": "^7.27.5",
 		"@babel/parser": "^7.27.5",
+		"@babel/plugin-transform-modules-commonjs": "^7.27.1",
 		"@babel/standalone": "^7.27.6",
 		"@babel/traverse": "^7.27.4",
 		"@chainner/node-path": "^0.1.1",

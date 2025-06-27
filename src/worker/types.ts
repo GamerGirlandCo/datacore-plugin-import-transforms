@@ -3,7 +3,9 @@ export interface WorkerRequest {
 	libDir: string;
 	vaultRoot: string;
 	vaultFiles: string[];
-
+	lvi: {
+		[k: string]: string;
+	}
 	version: string;
 	package: string;
 }
@@ -14,11 +16,17 @@ export interface WorkerResponse {
 	content: {
 		[pkg: string]: {
 			entryPoint: string;
+			latest: string;
 			baseDir: string;
+			dependencies: string[]
 			files: {
 				path: string;
 				transformed: string;
 			}[];
 		};
 	};
+	
+	latest: {
+		[k: string]: string
+	}
 }

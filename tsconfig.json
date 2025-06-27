@@ -15,6 +15,7 @@
 			"DOM",
 			"ES5",
 			"ES6",
+			"ESNext",
 			"ES7"
 		],
 	},
@@ -25,6 +26,8 @@
 	"include": [
 		"src/main.ts",
 		"src/worker/*.ts",
+		"src/worker/utils.ts",
+		"src/worker/transform.worker.ts",
 		"src/typings/**/*.d.ts"
 	]
 }

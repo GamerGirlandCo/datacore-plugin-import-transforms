@@ -3,16 +3,22 @@ const TransformWorker = tw.default;
 import { Plugin } from "obsidian";
 import pathutils from "@chainner/node-path";
 import { transform, traverse } from "@babel/core";
-import { transformImportsAndExports, TransformOptions } from "./util";
+import {
+	stripName,
+	transformImportsAndExports,
+	TransformOptions,
+} from "./util";
 import { parse } from "@babel/parser";
 import { WorkerRequest, WorkerResponse } from "./worker/types";
 
 interface Settings {
 	downloadedNpmLibs: TransformOptions["importPaths"];
+	latestVersionIndex: TransformOptions["latestVersions"];
 }
 
 const DEFAULT_SETTINGS: Settings = {
 	downloadedNpmLibs: {},
+	latestVersionIndex: {},
 };
 
 type PromiseResolver<T> = (value: T | PromiseLike<T>) => void;
@@ -55,12 +61,14 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 			this.#pending.clear();
 		};
 	}
+
 	async preTransform(
 		srcPath: string,
 		src: string,
 		jsx: boolean,
 		ts: boolean
 	): Promise<string> {
+		if(srcPath.startsWith(".obsidian")) return src;
 		const topLevelmports = await this.traverseImports(src);
 		const versions = await Promise.all(
 			topLevelmports.map((pkg) => {
@@ -76,7 +84,12 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 				return [rpkg, version];
 			})
 		);
-		await Promise.all(versions.map(([k, v]) => this.addPackage(k, v)));
+
+		const realVersions = Object.fromEntries(
+			await Promise.all(
+				versions.map(async ([k, v]) => [k, await this.addPackage(k, v)])
+			)
+		);
 		/* const entries = Object.fromEntries(
 			[...resolved.entries()].map(([k, vv]) => {
 				const base = this.libDir + `/${k.replace("latest", vv.version)}`;
@@ -106,6 +119,10 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 						vaultRoot: this.app.vault.adapter.getBasePath(),
 						vaultFiles: this.app.vault.getFiles().map((a) => a.path),
 						importPaths: { ...this._settings.downloadedNpmLibs },
+						dependencies: Object.entries(realVersions).map(
+							([kk, vv]) => `${kk}@${(vv as any).version}`
+						),
+						latestVersions: this._settings.latestVersionIndex,
 					},
 				],
 				/* [
@@ -139,6 +156,7 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 							"react",
 							"preact",
 							"preact/hooks",
+							"preact/compat",
 							"react-dom",
 							"#datacore",
 						].includes(node.source.value) ||
@@ -156,11 +174,18 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 		});
 		return [...imports];
 	}
-	async addPackage(src: string, v = "latest"): Promise<void> {
+	async addPackage(
+		src: string,
+		v = "latest"
+	): Promise<Pick<TransformOptions, "dependencies" | "version">> {
 		console.log(`${src}@${v}`);
+		const key = `${src}@${v}`;
+		const latestKey = `${src}@${this._settings.latestVersionIndex[src]}`;
 		if (
-			!this._settings.downloadedNpmLibs[src] ||
-			!this._settings.downloadedNpmLibs[src]?.files?.length
+			(!this._settings.downloadedNpmLibs[key] ||
+			!this._settings.downloadedNpmLibs[key]?.files?.length) &&
+			(!this._settings.downloadedNpmLibs[latestKey] ||
+			!this._settings.downloadedNpmLibs[latestKey]?.files?.length)
 		) {
 			const id = crypto.randomUUID();
 			const resolved = await new Promise<WorkerResponse>((resolve, reject) => {
@@ -172,15 +197,28 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 					vaultFiles: this.app.vault.getFiles().map((a) => a.path),
 					version: v,
 					package: src,
+					lvi: this._settings.latestVersionIndex
 				} as WorkerRequest);
 			});
+			let sn: Awaited<ReturnType<DatacoreJSTransformPlugin["addPackage"]>> = {
+				dependencies: [],
+			};
 			for (let k in resolved.content) {
 				const cur = resolved.content[k];
+				if (k.startsWith(src)) {
+					sn = {
+						dependencies: cur.dependencies,
+						version: resolved.version,
+					};
+				}
 				this._settings.downloadedNpmLibs[k] = {
 					baseDir: cur.baseDir,
 					entryPoint: cur.entryPoint,
 					files: cur.files.map((a) => a.path),
+					latest: cur.latest,
+					dependencies: cur.dependencies,
 				};
+				this._settings.latestVersionIndex[stripName(k)] = cur.latest;
 				for (let f of cur.files) {
 					try {
 						try {
@@ -194,11 +232,18 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 						}
 					} catch (ex) {
 						console.error(ex);
-						console.error(ex.stack)
+						console.error(ex.stack);
 					}
 				}
 			}
+			return sn;
 		}
+		const rv = v == "latest" ? this._settings.latestVersionIndex[src] : v;
+		const inter = this._settings.downloadedNpmLibs[`${src}@${rv}`];
+		return {
+			dependencies: inter.dependencies,
+			version: rv,
+		};
 	}
 
 	onunload() {

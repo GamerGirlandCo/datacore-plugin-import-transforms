@@ -31,6 +31,7 @@ import { parse as doParse, parse, ParserPlugin } from "@babel/parser";
 import generate from "@babel/generator";
 import { NodePath } from "@babel/traverse";
 import { PluginObj, transformAsync } from "@babel/core";
+import { spec } from "node:test/reporters";
 const b = t;
 
 export type ImportArray = (
@@ -40,7 +41,15 @@ export type ImportArray = (
 )[];
 export type ExportArray = (ExportDefaultDeclaration | ExportNamedDeclaration)[];
 
-export const exts = [".js", ".jsx", ".ts", ".tsx", ".mjs", ".d.ts", "package.json"];
+export const exts = [
+	".js",
+	".jsx",
+	".ts",
+	".tsx",
+	".mjs",
+	".d.ts",
+	"package.json",
+];
 export interface TransformOptions {
 	vaultFiles: string[];
 	vaultRoot: string;
@@ -59,7 +68,7 @@ export interface TransformOptions {
 	dependencies: string[];
 	latestVersions: {
 		[k: string]: string;
-	}
+	};
 }
 export interface TransformRequest {
 	possiblePaths: string[];
@@ -180,7 +189,7 @@ function declToObjectProperty(decl: Declaration | null): ObjectProperty[] {
 function convertExports(
 	exports: ExportArray,
 	opts: TransformOptions,
-	filename?: string,
+	filename?: string
 ) {
 	let singleDefault: Expression | null = null;
 	const objEx = b.objectExpression(
@@ -253,7 +262,12 @@ function convertRelative(
 	opts: TransformOptions,
 	filename?: string
 ) {
-	const {importPaths, version, dependencies: deps} = opts
+	const { importPaths, version, dependencies: deps } = opts;
+	let ext = pathutils.extname(filename!)
+	if(ext == ".ts" && filename?.endsWith(".d.ts")) {
+		ext = ".d.ts"
+		// ext = ".js"
+	}
 	if (
 		filename &&
 		(pathutils.isAbsolute(filename) || pathutils.win32.isAbsolute(filename))
@@ -263,23 +277,27 @@ function convertRelative(
 			.slice(filename.split(sep_regex).indexOf(".obsidian"))
 			.join("/");
 	let base = src;
-	let key = `${base}@${version}`
+	let key = `${base}@${version}`;
 	let aux: string | null = null;
-	if (src.split("/").length > 2 && !src.startsWith("./") && !src.startsWith("..")) {
-		base =  src.split("/").slice(0, 2).join("/");
-		key = `${base}@${version}`
-		if(!importPaths[key])
-			key = deps.find(a => a.startsWith(base))!
+	if (
+		src.split("/").length > 2 &&
+		!src.startsWith("./") &&
+		!src.startsWith("..")
+	) {
+		base = src.split("/").slice(0, 2).join("/");
+		key = `${base}@${version}`;
+		if (!importPaths[key]) key = deps.find((a) => a.startsWith(base))!;
 		aux = src.split("/").slice(2).join("/");
 	}
-	if(!importPaths[key] && !src.startsWith("./") && !src.startsWith("..")) {
-		let nk = deps.find(a => {
-			return a.startsWith(base)
-		})
-		if(nk)
-			key = nk
-		else
-			key = `${base}@${opts.latestVersions[base]}`
+	if (!importPaths[key] && !src.startsWith("./") && !src.startsWith("..")) {
+		let nk = deps.find((a) => {
+			return a.startsWith(base);
+		});
+		if (nk) key = nk;
+		else key = `${base}@${opts.latestVersions[base]}`;
+	}
+	if(!aux && importPaths[key]?.entryPoint) {
+		return pathutils.posix.join(importPaths[key].baseDir,importPaths[key].entryPoint)
 	}
 
 	let entry: string | undefined = importPaths[key]?.files?.find(
@@ -288,42 +306,57 @@ function convertRelative(
 			!a.includes("cjs") &&
 			exts.includes(pathutils.extname(a))
 	);
-	if (aux && !src.startsWith("..") && !src.startsWith("./")) {
-		entry = importPaths[key]?.files?.find((a) => {
-			return aux
+	if (aux) {
+		const split = aux.split("/");
+		/* entry = importPaths[key]?.files?.map((a) => {
+			return [a, aux
 				.split("/")
-				.every((b, i, arr) =>
-					exts.some((c) =>
-						i == arr.length - 1 ? a.endsWith(b + c) : (a.includes(`${b}/`))
-					)
-				) &&
-				!a.includes("cjs") &&
-				exts.includes(pathutils.extname(a));
-		});
+				.filter(
+					(b, i, arr) =>
+						exts.some((c) => a.endsWith(b + c)) || a.includes(`/${b}/`) || a.includes(`${b}/`)
+				).length] as [string, number];
+		}).reduce((pv, cv) => pv[1] <= cv[1] ? cv : pv, ["", 0])[0]; */
+		const lastSegment = split[split.length - 1];
+		const rest = split.slice(0, -1);
+		entry = importPaths[key]?.files?.find(a => exts.some(b => a.endsWith(lastSegment + b)) && rest.every(b => a.includes(`/${b}/`)))
 	}
 	if ((src.startsWith("./") || src.startsWith("..")) && filename) {
-		entry = pathutils.join(pathutils.dirname(filename), src).replace(/\\/g, "/");
+		entry = pathutils
+			.join(pathutils.dirname(filename), src)
+			.replace(/\\/g, "/");
 
 		if (!exts.includes(pathutils.extname(entry))) {
 			const tmp = entry.replace(/\\/g, "/");
-			const splitDir = pathutils.dirname(entry).split(/\/|\\/);
-			const chopped = splitDir.slice(splitDir.indexOf("libs") + 1);
+			let splitDir = pathutils.dirname(tmp).split(/\/|\\/);	
+			let chopped = splitDir.slice(splitDir.indexOf("libs") + 1);
+			if(!chopped.length) {
+				chopped = splitDir;
+			}
+
 			// scuffed sliding window algorithm i guess..?
 			let libName: string | null = null;
 			outer: for (let i = 0; i < chopped.length; i++) {
 				for (let j = 1; j <= 2; j++) {
 					const libStart = chopped.slice(0, j).join("/");
-					if (libStart/* .slice(0, libStart.lastIndexOf("@")) */ in importPaths) {
-						key = libName = libStart/* .slice(0, libStart.lastIndexOf("@")) */;
+					if (
+						libStart in importPaths
+					) {
+						libName = libStart;
 						break outer;
 					}
 				}
 			}
+			if (libName && (key.startsWith("./") || key.startsWith(".."))) {
+				key = libName;
+			}
+
 			entry = importPaths[libName!]?.files?.find(
-				(a) => exts.some((b) => a == (tmp! + b) || a.startsWith(tmp + b)) || a == tmp
+				(a) =>
+					 a != filename && a == pathutils.posix.normalize(tmp + ext)
 			);
+
 			if (!entry) {
-				console.warn(entry);
+				console.warn("undefined relative entry ->", src, `(${filename})`);
 			}
 		}
 	}
@@ -332,13 +365,18 @@ function convertRelative(
 			importPaths[key] && importPaths[key].entryPoint
 				? importPaths[key]?.baseDir + "/" + importPaths[key]?.entryPoint
 				: undefined;
+	if (!entry && importPaths[key]?.files?.length == 1) {
+		entry = importPaths[key].files[0];
+	}
 	if (!entry) {
 		if (aux) {
-			const split = aux.split("/");
-			entry = importPaths[key]?.files?.find(
-				(a) =>
-					exts.some((b) => a.endsWith(split[split.length - 1] + b)) ||
-					a.endsWith(split[split.length - 1])
+			entry = importPaths[key]?.files?.find((a) =>
+				aux
+					.split("/")
+					.every(
+						(b, i, arr) =>
+							exts.some((c) => a.endsWith(b + c)) || a.includes(`${b}/`)
+					)
 			);
 		}
 	}
@@ -351,17 +389,60 @@ function convertRelative(
 }
 type ImportConvertResult = {
 	hooks: ImportSpecifier[];
-	other: ImportArray;
+	otherReact: ImportArray;
+	specs: t.Node[];
+	dcImports: ImportSpecifier[];
+	shouldRemove: boolean;
 };
+function convertRequireCallToImport(
+	node: t.VariableDeclaration | t.AssignmentExpression
+): [mod: string, specs: ImportArray][] {
+	const ret: [string, ImportArray][] = [];
+	if (t.isVariableDeclaration(node)) {
+		for (let d of node.declarations) {
+			if (
+				t.isCallExpression(d.init) &&
+				t.isIdentifier(d.init.callee) &&
+				d.init.callee.name == "require"
+			) {
+				let mod = (d.init.arguments[0] as StringLiteral).value;
+				let specs: ImportArray = [];
+				if (t.isObjectPattern(d.id)) {
+					for (let p of d.id.properties) {
+						if (t.isRestElement(p)) {
+						} else {
+							specs.push(
+								b.importSpecifier(p.value as Identifier, p.key as Identifier)
+							);
+						}
+					}
+				} else if (t.isIdentifier(d.id)) {
+					specs.push(t.importDefaultSpecifier(d.id));
+				}
+				ret.push([mod, specs]);
+			}
+		}
+	} /* else if (t.isAssignmentExpression(node)) {
+		if (t.isIdentifier(node.left)) {
+			ret.specs.push(b.importDefaultSpecifier(node.left));
+		} 
+	}*/
+	return ret;
+}
 function convertImportOrRequire(
-	source: string,
-	specifiers: ImportArray = []
+	src: string,
+	specifiers: ImportArray = [],
+	opts: TransformOptions,
+	filename?: string
 ): ImportConvertResult {
-	const ret: ImportConvertResult = {
+	let specs: ImportConvertResult = {
 		hooks: [],
-		other: [],
+		otherReact: [],
+		specs: [],
+		dcImports: [],
+		shouldRemove: false,
 	};
-	if (["react", "preact", "preact/hooks"].includes(source)) {
+	if (["react", "preact", "preact/hooks", "preact/compat"].includes(src)) {
 		let hooks = specifiers.filter(
 			(s: ImportSpecifier) =>
 				t.isImportSpecifier(s) &&
@@ -378,14 +459,58 @@ function convertImportOrRequire(
 				t.isImportDefaultSpecifier(s) ||
 				t.isImportNamespaceSpecifier(s)
 		) as ImportArray;
-		ret.hooks.push(...hooks);
+		specs.hooks.push(...hooks);
 		/* let hookSpecs = replaceWithIdent(
 					hooks,
 					dcMember(b.identifier("hooks"))
 				); */
-		ret.other.push(...other);
+		let otherSpecs = replaceWithIdent(specifiers, dcMember(b.identifier("preact")));
+		const finalReplacement = [];
+		// if (hookSpecs.declarations.length) finalReplacement.push(hookSpecs);
+		finalReplacement.push(otherSpecs);
+		specs.specs = finalReplacement;
+	} else if (src == "react-dom") {
+		specs.specs = [
+			replaceWithIdent(
+				specifiers as ImportArray,
+				dcMember(b.identifier("preact"))
+			),
+		];
+	} else if (src.startsWith("react/jsx-")) {
+		specs.specs = [
+			replaceWithIdent(
+				specifiers as ImportArray,
+				dcMember(b.identifier("jsxRuntime"))
+			),
+		];
+	} else if (src === "#datacore") {
+		specs.dcImports.push(...(specifiers as ImportSpecifier[]));
+		specs.shouldRemove = true;
+	} else if (
+		opts.vaultFiles.find((a) => a.startsWith(src)) ||
+		src.includes("#") ||
+		src.includes("^")
+	) {
+		const awaiter = b.awaitExpression(
+			b.callExpression(b.memberExpression(dc, dcRequire), [
+				b.stringLiteral(src),
+			])
+		);
+		specs.specs = [replaceWithIdent(specifiers as ImportArray, awaiter)];
+	} else {
+		let entry = convertRelative(src, opts, filename);
+		if (entry) {
+			const awaiter = b.awaitExpression(
+				b.callExpression(b.memberExpression(dc, dcRequire), [
+					b.stringLiteral(entry!),
+				])
+			);
+			specs.specs = [replaceWithIdent(specifiers as ImportArray, awaiter)];
+		} else {
+			specs.shouldRemove = true;
+		}
 	}
-	return ret;
+	return specs;
 }
 
 export function transformImportsAndExports({ types: t }: typeof Babel) {
@@ -398,92 +523,20 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 			ImportDeclaration(path: NodePath<ImportDeclaration>, state) {
 				let node = path.node;
 				let src: string = node.source.value;
-				if (["react", "preact", "preact/hooks"].includes(node.source.value)) {
-					let hooks = node.specifiers.filter(
-						(s: ImportSpecifier) =>
-							t.isImportSpecifier(s) &&
-							t.isIdentifier(s.imported) &&
-							s.imported.name.startsWith("use")
-					) as ImportSpecifier[];
-					let other: ImportArray = node.specifiers.filter(
-						(
-							s:
-								| ImportSpecifier
-								| ImportDefaultSpecifier
-								| ImportNamespaceSpecifier
-						) =>
-							(t.isImportSpecifier(s) &&
-								t.isIdentifier(s.imported) &&
-								!(s.imported.name as string).startsWith("use")) ||
-							t.isImportDefaultSpecifier(s) ||
-							t.isImportNamespaceSpecifier(s)
-					) as ImportArray;
-					dcHooks.push(...hooks);
-					/* let hookSpecs = replaceWithIdent(
-					hooks,
-					dcMember(b.identifier("hooks"))
-				); */
-					let otherSpecs = replaceWithIdent(
-						other,
-						dcMember(b.identifier("preact"))
-					);
-					const finalReplacement = [];
-					// if (hookSpecs.declarations.length) finalReplacement.push(hookSpecs);
-					finalReplacement.push(otherSpecs);
-
-					path.replaceWithMultiple(finalReplacement);
-				} else if (node.source.value == "react-dom") {
-					let specs = replaceWithIdent(
-						node.specifiers as ImportArray,
-						dcMember(b.identifier("preact"))
-					);
-					path.replaceWith(specs);
-				} else if (node.source.value.startsWith("react/jsx-")) {
-					path.replaceWith(
-						replaceWithIdent(
-							node.specifiers as ImportArray,
-							dcMember(b.identifier("jsxRuntime"))
-						)
-					);
-				} else if (src === "#datacore") {
-					dcImports.push(...(node.specifiers as ImportSpecifier[]));
+				const res = convertImportOrRequire(
+					src,
+					node.specifiers,
+					state.opts,
+					state.filename
+				);
+				dcImports.push(...res.dcImports);
+				dcHooks.push(...res.hooks);
+				if (res.shouldRemove) {
 					path.remove();
-				} else if (
-					state.opts.vaultFiles.find((a) => a.startsWith(src)) ||
-					src.includes("#") ||
-					src.includes("^")
-				) {
-					const awaiter = b.awaitExpression(
-						b.callExpression(b.memberExpression(dc, dcRequire), [
-							b.stringLiteral(src),
-						])
-					);
-					const specs = replaceWithIdent(
-						node.specifiers as ImportArray,
-						awaiter
-					);
-					path.replaceWith(specs);
 				} else {
-					let entry = convertRelative(
-						src,
-						state.opts,
-						state.filename
-					);
-					if (entry) {
-						const awaiter = b.awaitExpression(
-							b.callExpression(b.memberExpression(dc, dcRequire), [
-								b.stringLiteral(entry!),
-							])
-						);
-						const specs = replaceWithIdent(
-							node.specifiers as ImportArray,
-							awaiter
-						);
-						path.replaceWith(specs);
-					} else {
-						path.remove();
-					}
-				} /* if (plugin != null && src.split("/").length == 2) */
+					path.replaceWithMultiple(res.specs);
+				}
+				/* if (plugin != null && src.split("/").length == 2) */
 				/* else if (resolveRelativeTo != null) {
 					if (src.startsWith("./") || src.startsWith("..")) {
 						let apath = pathutils.join(resolveRelativeTo, src);
@@ -561,6 +614,17 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 					}
 				}
 			},
+			VariableDeclaration(path) {
+				const node = path.node;
+				const res = convertRequireCallToImport(node);
+				if (res.length) {
+					path.replaceWithMultiple(
+						res.map(([mod, specs]) =>
+							t.importDeclaration(specs, t.stringLiteral(mod))
+						)
+					);
+				}
+			},
 			CallExpression(path, state) {
 				const node = path.node;
 
@@ -597,7 +661,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 						path.replaceWith(awaiter);
 					} else {
 					}
-				} 
+				}
 			},
 			AssignmentExpression(path, state) {
 				const node = path.node;
@@ -688,7 +752,10 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 						t.isConditionalExpression(path.parent) ||
 						t.isObjectProperty(path.parent)
 					) {
-						path.replaceWith(t.expressionStatement(t.nullLiteral()));
+						if(t.isObjectProperty(path.parent))
+							path.replaceWith(t.nullLiteral())
+						else
+							path.parentPath.replaceWith(t.expressionStatement(t.nullLiteral()));
 					} else {
 						path.remove();
 					}
@@ -719,7 +786,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 						let entry = convertRelative(
 							node.source.value,
 							state.opts,
-							state.filename,
+							state.filename
 						);
 						if (entry) {
 							const awaiter = b.awaitExpression(
@@ -787,7 +854,7 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 			const originalExports = convertExports(
 				dcExports.filter((a) => !(a as any).source),
 				this.opts,
-				this.filename,
+				this.filename
 			);
 
 			const that = this;
@@ -814,6 +881,12 @@ export function transformImportsAndExports({ types: t }: typeof Babel) {
 			}
 			// file.ast.program.body.unshift(b.variableDeclaration("let", [b.variableDeclarator(b.identifier("exports"), b.objectExpression([]))]))
 			file.ast.program.body.push(originalExports);
+			babel.traverse(file.ast, {
+				AssignmentExpression(path) {
+					const orig = visitor.AssignmentExpression as Function;
+					orig(path, that);
+				}	
+			})
 
 			file.code = generate(file.ast).code;
 		},
