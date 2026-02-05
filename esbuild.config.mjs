@@ -60,7 +60,7 @@ const context = await esbuild.context({
 			setup(build) {
 				build.onEnd((res) => {
 					for (let f of ["manifest.json"]) copyFileSync(f, `./build/${f}`);
-					if (!prod && process.env.TEST_VAULT) {
+					if (process.env.TEST_VAULT) {
 						const base = path.resolve(
 							`${process.env.TEST_VAULT}/.obsidian/plugins/datacore-addon-transform-imports`
 						);

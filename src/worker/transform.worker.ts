@@ -1,5 +1,4 @@
 import { WorkerRequest, WorkerResponse } from "./types";
-import { transform } from "@babel/core";
 import { stripName, transformImportsAndExports } from "../util";
 import { computeBase, computeName, resolve } from "./utils";
 
@@ -43,38 +42,34 @@ onmessage = async (e) => {
 			if (text.split("\n")[0].match(/@flow/i)) continue;
 			if (final.endsWith(".json")) continue;
 			try {
-				const transformed = transform(text, {
-					filename: final,
-					sourceRoot: vaultRoot,
-					cwd: vaultRoot,
-					plugins: [
-						[
-							transformImportsAndExports,
-							{
-								vaultRoot: vaultRoot,
-								vaultFiles,
-								outerBaseDir: base,
-								dependencies: info.deps ?? [],
-								latestVersions: Object.fromEntries([...latest.entries()]),
-								version: extractVersion(pkg),
-								importPaths: Object.fromEntries(
-									[...resolved.entries()].map(([k, vv]) => {
-										const base = `${libDir}/${k}`;
-										return [
-											k,
-											{
-												vaultRoot: vaultRoot,
-												baseDir: base,
-												files: vv.files.map((a) => computeBase(a, base)),
-												entryPoint: vv.entryPoint,
-											},
-										];
-									})
-								),
-							},
-						],
-					],
-				})!.code!;
+				const transformed = transformImportsAndExports(
+					text,
+					{
+						vaultRoot: vaultRoot,
+						vaultFiles,
+						outerBaseDir: base,
+						dependencies: info.deps ?? [],
+						latestVersions: Object.fromEntries([...latest.entries()]),
+						version: extractVersion(pkg),
+						importPaths: Object.fromEntries(
+							[...resolved.entries()].map(([k, vv]) => {
+								const base = `${libDir}/${k}`;
+								return [
+									k,
+									{
+										vaultRoot: vaultRoot,
+										baseDir: base,
+										files: vv.files.map((a) => computeBase(a, base)),
+										entryPoint: vv.entryPoint,
+										dependencies: vv.deps ?? [],
+										latest: latest.get(stripName(k)) ?? extractVersion(k),
+									},
+								];
+							})
+						),
+					},
+					final
+				);
 				pkgEntry.push({
 					path: base + "/" + computeName(f, true),
 					transformed,

@@ -2,13 +2,12 @@ import * as tw from "worker/transform.worker";
 const TransformWorker = tw.default;
 import { Plugin } from "obsidian";
 import pathutils from "@chainner/node-path";
-import { transform, traverse } from "@babel/core";
+import jscodeshift from "jscodeshift";
 import {
 	stripName,
 	transformImportsAndExports,
 	TransformOptions,
 } from "./util";
-import { parse } from "@babel/parser";
 import { WorkerRequest, WorkerResponse } from "./worker/types";
 
 interface Settings {
@@ -60,6 +59,17 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 			}
 			this.#pending.clear();
 		};
+		this.addCommand({
+			id: "purge-caches",
+			name: "[DEBUG] purge downloaded package files",
+			callback: async () => {
+				const folders = await this.app.vault.adapter.list(this.libDir);
+				for (const f of folders.folders) {
+					await this.app.vault.adapter.rmdir(f, true);
+				}
+				this._settings.downloadedNpmLibs = {};
+			},
+		});
 	}
 
 	async preTransform(
@@ -68,7 +78,7 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 		jsx: boolean,
 		ts: boolean
 	): Promise<string> {
-		if(srcPath.startsWith(".obsidian")) return src;
+		if (srcPath.startsWith(".obsidian")) return src;
 		const topLevelmports = await this.traverseImports(src);
 		const versions = await Promise.all(
 			topLevelmports.map((pkg) => {
@@ -108,38 +118,26 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 					},
 				];
 			})
-		) */ return transform(src, {
-			filename: srcPath,
-			cwd: this.app.vault.adapter.getBasePath(),
-			plugins: [
-				[
-					transformImportsAndExports,
-					{
-						outerBaseDir: pathutils.dirname(srcPath),
-						vaultRoot: this.app.vault.adapter.getBasePath(),
-						vaultFiles: this.app.vault.getFiles().map((a) => a.path),
-						importPaths: { ...this._settings.downloadedNpmLibs },
-						dependencies: Object.entries(realVersions).map(
-							([kk, vv]) => `${kk}@${(vv as any).version}`
-						),
-						latestVersions: this._settings.latestVersionIndex,
-					},
-				],
-				/* [
-							transformExtraImports,
-							{
-								possiblePathEntries: Object.fromEntries([
-									...dependencies.entries(),
-								]),
-							},
-						], */
-			],
-		})?.code!;
+		) */ return transformImportsAndExports(
+			src,
+			{
+				outerBaseDir: pathutils.dirname(srcPath),
+				vaultRoot: this.app.vault.adapter.getBasePath(),
+				vaultFiles: this.app.vault.getFiles().map((a) => a.path),
+				importPaths: { ...this._settings.downloadedNpmLibs },
+				dependencies: Object.entries(realVersions).map(
+					([kk, vv]) => `${kk}@${(vv as any).version}`
+				),
+				latestVersions: this._settings.latestVersionIndex,
+			},
+			srcPath
+		);
 		// return await transformImportsAndExports(src, this, ts, jsx);
 	}
 	async traverseImports(src: string) {
 		const imports = new Set<string>();
-		const parsed = parse(src, {
+		const parser = jscodeshift.withParser("tsx");
+		const ast = parser(src, {
 			plugins: ["jsx", "typescript"],
 			sourceType: "module",
 			allowReturnOutsideFunction: true,
@@ -147,31 +145,29 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 			errorRecovery: true,
 		});
 		const p = this;
-		traverse(parsed, {
-			ImportDeclaration(path) {
-				const node = path.node;
-				if (
-					!(
-						[
-							"react",
-							"preact",
-							"preact/hooks",
-							"preact/compat",
-							"react-dom",
-							"#datacore",
-						].includes(node.source.value) ||
-						p.app.vault.getFileByPath(node.source.value) ||
-						node.source.value.includes("^") ||
-						node.source.value.indexOf("#") > 0 ||
-						node.source.value.startsWith("./") ||
-						node.source.value.startsWith("..")
-					) &&
-					node.specifiers
-				) {
-					imports.add(node.source.value);
-				}
-			},
-		});
+		ast.find(jscodeshift.ImportDeclaration).forEach(({node}) => {
+			const source: string = node.source.value as string ?? "";
+			if (
+				!(
+					[
+						"react",
+						"preact",
+						"preact/hooks",
+						"preact/compat",
+						"react-dom",
+						"#datacore",
+					].includes(source) ||
+					p.app.vault.getFileByPath(source) ||
+					source.includes("^") ||
+					source.indexOf("#") > 0 ||
+					source.startsWith("./") ||
+					source.startsWith("..")
+				) &&
+				node.specifiers
+			) {
+				imports.add(source);
+			}
+		});	
 		return [...imports];
 	}
 	async addPackage(
@@ -183,9 +179,9 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 		const latestKey = `${src}@${this._settings.latestVersionIndex[src]}`;
 		if (
 			(!this._settings.downloadedNpmLibs[key] ||
-			!this._settings.downloadedNpmLibs[key]?.files?.length) &&
+				!this._settings.downloadedNpmLibs[key]?.files?.length) &&
 			(!this._settings.downloadedNpmLibs[latestKey] ||
-			!this._settings.downloadedNpmLibs[latestKey]?.files?.length)
+				!this._settings.downloadedNpmLibs[latestKey]?.files?.length)
 		) {
 			const id = crypto.randomUUID();
 			const resolved = await new Promise<WorkerResponse>((resolve, reject) => {
@@ -197,7 +193,7 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 					vaultFiles: this.app.vault.getFiles().map((a) => a.path),
 					version: v,
 					package: src,
-					lvi: this._settings.latestVersionIndex
+					lvi: this._settings.latestVersionIndex,
 				} as WorkerRequest);
 			});
 			let sn: Awaited<ReturnType<DatacoreJSTransformPlugin["addPackage"]>> = {

@@ -16,6 +16,7 @@
 		"@babel/types": "^7.27.6",
 		"@types/babel__core": "^7.20.5",
 		"@types/babel__standalone": "^7.1.9",
+		"@types/jscodeshift": "^17.3.0",
 		"@types/node": "24.0.3",
 		"@types/pako": "^2.0.3",
 		"@types/path-browserify": "^1.0.3",
@@ -40,8 +41,8 @@
 		"@obsidize/tar-browserify": "^5.2.0",
 		"babel-plugin-syntax-jsx": "^6.18.0",
 		"babel-plugin-syntax-typescript": "^7.0.0-alpha.19",
+		"jscodeshift": "^17.3.0",
 		"node-path": "^0.0.3",
-		"pako": "^2.1.0",
-		"remove": "^0.1.5"
+		"pako": "^2.1.0"
 	}
 }
