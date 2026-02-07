@@ -2,12 +2,13 @@ import * as tw from "worker/transform.worker";
 const TransformWorker = tw.default;
 import { Plugin } from "obsidian";
 import pathutils from "@chainner/node-path";
-import jscodeshift from "jscodeshift";
+import { parse as doParse, ParserOptions } from "@babel/parser";
+import { visit, parse } from "recast";
 import {
 	stripName,
-	transformImportsAndExports,
 	TransformOptions,
 } from "./util";
+import { transformImportsAndExports } from "./code-transformer";
 import { WorkerRequest, WorkerResponse } from "./worker/types";
 
 interface Settings {
@@ -59,17 +60,6 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 			}
 			this.#pending.clear();
 		};
-		this.addCommand({
-			id: "purge-caches",
-			name: "[DEBUG] purge downloaded package files",
-			callback: async () => {
-				const folders = await this.app.vault.adapter.list(this.libDir);
-				for (const f of folders.folders) {
-					await this.app.vault.adapter.rmdir(f, true);
-				}
-				this._settings.downloadedNpmLibs = {};
-			},
-		});
 	}
 
 	async preTransform(
@@ -118,7 +108,8 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 					},
 				];
 			})
-		) */ return transformImportsAndExports(
+		) */
+		return transformImportsAndExports(
 			src,
 			{
 				outerBaseDir: pathutils.dirname(srcPath),
@@ -136,38 +127,47 @@ export default class DatacoreJSTransformPlugin extends Plugin {
 	}
 	async traverseImports(src: string) {
 		const imports = new Set<string>();
-		const parser = jscodeshift.withParser("tsx");
-		const ast = parser(src, {
-			plugins: ["jsx", "typescript"],
-			sourceType: "module",
-			allowReturnOutsideFunction: true,
-			allowAwaitOutsideFunction: true,
-			errorRecovery: true,
+		const parsed = parse(src, {
+			parser: {
+				parse(source: string) {
+					return doParse(source, {
+						plugins: ["jsx", "typescript"],
+						sourceType: "module",
+						allowReturnOutsideFunction: true,
+						allowAwaitOutsideFunction: true,
+						errorRecovery: true,
+					});
+				},
+			},
 		});
 		const p = this;
-		ast.find(jscodeshift.ImportDeclaration).forEach(({node}) => {
-			const source: string = node.source.value as string ?? "";
-			if (
-				!(
-					[
-						"react",
-						"preact",
-						"preact/hooks",
-						"preact/compat",
-						"react-dom",
-						"#datacore",
-					].includes(source) ||
-					p.app.vault.getFileByPath(source) ||
-					source.includes("^") ||
-					source.indexOf("#") > 0 ||
-					source.startsWith("./") ||
-					source.startsWith("..")
-				) &&
-				node.specifiers
-			) {
-				imports.add(source);
-			}
-		});	
+
+		visit(parsed, {
+			visitImportDeclaration(path) {
+				const node = path.node;
+				const nsrc = node.source.value as string;
+				if (
+					!(
+						[
+							"react",
+							"preact",
+							"preact/hooks",
+							"preact/compat",
+							"react-dom",
+							"#datacore",
+						].includes(nsrc) ||
+						p.app.vault.getFileByPath(nsrc) ||
+						nsrc.includes("^") ||
+						nsrc.indexOf("#") > 0 ||
+						nsrc.startsWith("./") ||
+						nsrc.startsWith("..")
+					) &&
+					node.specifiers
+				) {
+					imports.add(nsrc);
+				}
+			},
+		});
 		return [...imports];
 	}
 	async addPackage(

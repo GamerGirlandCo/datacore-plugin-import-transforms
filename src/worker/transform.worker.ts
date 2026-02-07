@@ -1,5 +1,6 @@
 import { WorkerRequest, WorkerResponse } from "./types";
-import { stripName, transformImportsAndExports } from "../util";
+import { stripName } from "../util";
+import { transformImportsAndExports } from "../code-transformer";
 import { computeBase, computeName, resolve } from "./utils";
 
 const extractVersion = (k: string) => {
@@ -18,9 +19,13 @@ onmessage = async (e) => {
 		vaultRoot,
 		vaultFiles,
 		id,
-		lvi
+		lvi,
 	} = e.data as WorkerRequest;
-	const { rootEntry, map: resolved, latest } = await resolve(paackage, version, lvi);
+	const {
+		rootEntry,
+		map: resolved,
+		latest,
+	} = await resolve(paackage, version, lvi);
 	const finalFiles: WorkerResponse["content"] = {};
 	for (let [pkg, info] of resolved.entries()) {
 		const base = libDir + `/${pkg}`;
@@ -68,7 +73,9 @@ onmessage = async (e) => {
 							})
 						),
 					},
-					final
+					final,
+					{	
+					}
 				);
 				pkgEntry.push({
 					path: base + "/" + computeName(f, true),
@@ -97,4 +104,3 @@ onmessage = async (e) => {
 	};
 	postMessage(msg);
 };
-
