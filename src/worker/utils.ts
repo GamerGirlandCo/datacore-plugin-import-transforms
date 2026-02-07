@@ -1,7 +1,7 @@
 import pathutils from "@chainner/node-path";
 import { Archive, TarEntry } from "@obsidize/tar-browserify";
 import pako from "pako";
-import { exts, stripName } from "../util";
+import { exts, stripName } from "../ast-util";
 import { WorkerRequest } from "./types";
 type PackageExport = {
 	import: string | string[];

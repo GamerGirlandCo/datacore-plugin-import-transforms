@@ -1,5 +1,6 @@
 import { WorkerRequest, WorkerResponse } from "./types";
-import { stripName, transformImportsAndExports } from "../util";
+import { stripName } from "../ast-util";
+import { transformImportsAndExports } from "../code-transformer";
 import { computeBase, computeName, resolve } from "./utils";
 
 const extractVersion = (k: string) => {

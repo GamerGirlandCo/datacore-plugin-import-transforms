@@ -5,9 +5,9 @@ import pathutils from "@chainner/node-path";
 import jscodeshift from "jscodeshift";
 import {
 	stripName,
-	transformImportsAndExports,
 	TransformOptions,
-} from "./util";
+} from "./ast-util";
+import { transformImportsAndExports } from "./code-transformer";
 import { WorkerRequest, WorkerResponse } from "./worker/types";
 
 interface Settings {
